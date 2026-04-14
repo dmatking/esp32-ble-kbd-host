@@ -1,0 +1,14 @@
+version: "1.0.0"
+description: >
+  BLE HID keyboard host for ESP-IDF (NimBLE). Bundles a modified esp_hid
+  component with lightweight reconnect and pre-GATT security initiation.
+  Fully decoupled from display and GPIO; delivers keys and status via callbacks.
+
+url: https://github.com/dmatking/esp-ble-kbd-host
+repository: https://github.com/dmatking/esp-ble-kbd-host
+license: Apache-2.0
+maintainers:
+  - dmatking@yahoo.com
+
+dependencies:
+  idf: ">=5.4.0"

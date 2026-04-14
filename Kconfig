@@ -1,0 +1,33 @@
+menu "BLE Keyboard Host"
+
+    config BLE_KBD_HOST_TASK_STACK
+        int "Stack size for keyboard state machine task (bytes)"
+        range 4096 32768
+        default 8192
+        help
+            Stack for the single kbd_main_task that drives scanning,
+            pairing, connecting, and reconnection.
+
+    config BLE_KBD_HOST_TASK_PRIORITY
+        int "FreeRTOS task priority"
+        range 1 20
+        default 2
+
+    config BLE_KBD_HOST_RECONNECT_INTERVAL_MS
+        int "Delay between reconnect attempts (ms)"
+        range 500 10000
+        default 3000
+        help
+            How long to wait between reconnect attempts when the keyboard
+            disconnects. BOOT-hold re-pair is checked during this interval.
+
+    config BLE_KBD_HOST_SCAN_TIMEOUT_MS
+        int "Scan timeout before 'put keyboard in pairing mode' prompt (ms)"
+        range 5000 60000
+        default 20000
+        help
+            If no devices are found within this many milliseconds of starting
+            a scan, the user is prompted to put the keyboard into pairing mode
+            and the scan restarts.
+
+endmenu
