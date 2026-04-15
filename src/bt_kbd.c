@@ -376,6 +376,13 @@ top:
                       "reconnecting...", "BOOT 2s: force re-pair");
 
             while (1) {
+                // Check for a queued re-pair command BEFORE blocking in reconnect
+                {
+                    int param = 0;
+                    if (wait_with_cmd_poll(0, &param) == CMD_START_PAIRING)
+                        goto do_pair;
+                }
+
                 bool ok = false;
 
                 if (s_hidh_dev) {
