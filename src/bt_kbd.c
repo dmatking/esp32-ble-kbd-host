@@ -82,10 +82,19 @@ static void emit_key(char ch)
 }
 
 // Poll the command queue in 100 ms slices for up to `ms` total milliseconds.
+// Always does at least one non-blocking check (handles ms=0 correctly).
 // Returns CMD_START_PAIRING if received (with param in *out_param),
 // CMD_SELECT_DEVICE if received (with index in *out_param), or 0 if timeout.
 static kbd_cmd_type_t wait_with_cmd_poll(uint32_t ms, int *out_param)
 {
+    // Non-blocking check first — this makes ms=0 a useful "check now" call
+    {
+        kbd_cmd_t cmd;
+        if (xQueueReceive(s_cmd_queue, &cmd, 0) == pdTRUE) {
+            if (out_param) *out_param = cmd.param;
+            return cmd.type;
+        }
+    }
     uint32_t elapsed = 0;
     while (elapsed < ms) {
         kbd_cmd_t cmd;
@@ -334,11 +343,18 @@ static bool try_bonded_reconnect(void)
     xSemaphoreTake(s_open_done_sem, 0);  // drain any stale signal
     esp_hidh_dev_open(value.peer_addr.val, ESP_HID_TRANSPORT_BLE, addr_type);
 
-    // Wait up to 15 s for the OPEN_EVENT
+    // Wait up to 15 s for the OPEN_EVENT, bailing out if re-pair requested
     TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(15000);
     while (xTaskGetTickCount() < deadline) {
         if (xSemaphoreTake(s_open_done_sem, pdMS_TO_TICKS(100)) == pdTRUE)
             break;
+        // CMD_START_PAIRING: cancel connection and let caller handle it
+        kbd_cmd_t peek;
+        if (xQueuePeek(s_cmd_queue, &peek, 0) == pdTRUE &&
+            peek.type == CMD_START_PAIRING) {
+            ble_gap_conn_cancel();
+            return false;  // command stays in queue; outer loop will pick it up
+        }
     }
 
     if (xSemaphoreTake(s_connected_sem, 0) == pdTRUE) {
@@ -373,7 +389,7 @@ top:
 
         if (!s_cfg.force_repair && bond_count > 0) {
             set_state(BLE_KBD_STATE_RECONNECTING,
-                      "reconnecting...", "BOOT 2s: force re-pair");
+                      "Reconnecting...", "Hold BOOT 2s to re-pair");
 
             while (1) {
                 // Check for a queued re-pair command BEFORE blocking in reconnect
@@ -514,7 +530,7 @@ restart_scan: {
         ble_kbd_scan_dev_t sel = s_scan_devs[selected];
         xSemaphoreGive(s_scan_mutex);
 
-        set_state(BLE_KBD_STATE_CONNECTING, sel.name, "connecting...");
+        set_state(BLE_KBD_STATE_CONNECTING, sel.name, "Connecting...");
 
         xSemaphoreTake(s_open_done_sem, 0);
         esp_hidh_dev_open(sel.addr, ESP_HID_TRANSPORT_BLE, sel.addr_type);
@@ -545,7 +561,7 @@ restart_scan: {
 connected:
     // === Connected phase =====================================================
 
-    set_state(BLE_KBD_STATE_CONNECTED, "kbd connected!", "");
+    set_state(BLE_KBD_STATE_CONNECTED, "Keyboard connected!", "");
     memset(s_prev_keys, 0, sizeof(s_prev_keys));
 
     // Synthetic NUL wakeup — lets app unblock any queue waiting on a key
@@ -555,7 +571,7 @@ connected:
     xSemaphoreTake(s_disconnected_sem, portMAX_DELAY);
 
     set_state(BLE_KBD_STATE_RECONNECTING,
-              "kbd disconnected", "BOOT 2s: force re-pair");
+              "Keyboard disconnected", "Hold BOOT 2s to re-pair");
 
     vTaskDelay(pdMS_TO_TICKS(300));  // let BLE stack settle
     goto top;
