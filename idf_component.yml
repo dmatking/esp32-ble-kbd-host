@@ -4,8 +4,8 @@ description: >
   component with lightweight reconnect and pre-GATT security initiation.
   Fully decoupled from display and GPIO; delivers keys and status via callbacks.
 
-url: https://github.com/dmatking/esp-ble-kbd-host
-repository: https://github.com/dmatking/esp-ble-kbd-host
+url: https://github.com/dmatking/esp32-ble-kbd-host
+repository: https://github.com/dmatking/esp32-ble-kbd-host
 license: Apache-2.0
 maintainers:
   - dmatking@yahoo.com

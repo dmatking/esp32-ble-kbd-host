@@ -1,4 +1,4 @@
-# esp-ble-kbd-host
+# esp32-ble-kbd-host
 
 BLE HID keyboard host component for ESP-IDF (NimBLE stack).
 
@@ -24,9 +24,9 @@ No display or GPIO coupling — works headless or with any UI layer.
 ```yaml
 # idf_component.yml
 dependencies:
-  esp-ble-kbd-host:
-    path: /path/to/esp-ble-kbd-host   # local dev
-    # git: https://github.com/dmatking/esp-ble-kbd-host  # or from git
+  esp32-ble-kbd-host:
+    path: /path/to/esp32-ble-kbd-host   # local dev
+    # git: https://github.com/dmatking/esp32-ble-kbd-host  # or from git
 ```
 
 ```c

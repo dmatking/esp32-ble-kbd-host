@@ -1,5 +1,5 @@
 /*
- * hid_gap.c — NimBLE GAP initialisation for esp-ble-kbd-host
+ * hid_gap.c — NimBLE GAP initialisation for esp32-ble-kbd-host
  *
  * Stripped from ESP-IDF's esp_hid_gap.c (Espressif Systems, Unlicense/CC0-1.0),
  * retaining only the NimBLE/BLE paths. Bluedroid and Classic BT paths removed.
