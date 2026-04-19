@@ -1,0 +1,4 @@
+dependencies:
+  idf: ">=5.4.0"
+  esp32-ble-kbd-host:
+    path: "../../.."
