@@ -21,12 +21,19 @@ No display or GPIO coupling — works headless or with any UI layer.
 
 ## Quick start
 
+In your project's `main/idf_component.yml`:
+
 ```yaml
-# idf_component.yml
+dependencies:
+  dmatking/esp32-ble-kbd-host: ">=1.0.0"
+```
+
+For local development, use a path dependency instead:
+
+```yaml
 dependencies:
   esp32-ble-kbd-host:
-    path: /path/to/esp32-ble-kbd-host   # local dev
-    # git: https://github.com/dmatking/esp32-ble-kbd-host  # or from git
+    path: /path/to/esp32-ble-kbd-host
 ```
 
 ```c
