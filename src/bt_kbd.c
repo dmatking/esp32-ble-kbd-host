@@ -81,30 +81,29 @@ static void emit_key(char ch)
         s_cfg.callbacks.on_key(ch, s_cfg.callbacks.ctx);
 }
 
-// Poll the command queue in 100 ms slices for up to `ms` total milliseconds.
-// Always does at least one non-blocking check (handles ms=0 correctly).
-// Returns CMD_START_PAIRING if received (with param in *out_param),
-// CMD_SELECT_DEVICE if received (with index in *out_param), or 0 if timeout.
-static kbd_cmd_type_t wait_with_cmd_poll(uint32_t ms, int *out_param)
+// Wait up to `ms` for a CMD_START_PAIRING in the command queue. Polls in
+// 100 ms slices; ms == 0 is a single non-blocking sweep. Other command types
+// are dropped with a warning — only START_PAIRING is meaningful outside the
+// scan phase, and silent consumption masks app misuse.
+static bool wait_for_start_pairing(uint32_t ms)
 {
-    // Non-blocking check first — this makes ms=0 a useful "check now" call
-    {
+    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(ms);
+    while (1) {
+        TickType_t now    = xTaskGetTickCount();
+        TickType_t remain = (now < deadline) ? (deadline - now) : 0;
+        TickType_t slice  = remain > pdMS_TO_TICKS(100)
+                          ? pdMS_TO_TICKS(100)
+                          : remain;
+
         kbd_cmd_t cmd;
-        if (xQueueReceive(s_cmd_queue, &cmd, 0) == pdTRUE) {
-            if (out_param) *out_param = cmd.param;
-            return cmd.type;
+        if (xQueueReceive(s_cmd_queue, &cmd, slice) == pdTRUE) {
+            if (cmd.type == CMD_START_PAIRING) return true;
+            ESP_LOGW(TAG, "dropping cmd type %d outside scan phase",
+                     (int)cmd.type);
+            continue;
         }
+        if (remain == 0) return false;
     }
-    uint32_t elapsed = 0;
-    while (elapsed < ms) {
-        kbd_cmd_t cmd;
-        if (xQueueReceive(s_cmd_queue, &cmd, pdMS_TO_TICKS(100)) == pdTRUE) {
-            if (out_param) *out_param = cmd.param;
-            return cmd.type;
-        }
-        elapsed += 100;
-    }
-    return (kbd_cmd_type_t)0;
 }
 
 // ---------------------------------------------------------------------------
@@ -393,11 +392,7 @@ top:
 
             while (1) {
                 // Check for a queued re-pair command BEFORE blocking in reconnect
-                {
-                    int param = 0;
-                    if (wait_with_cmd_poll(0, &param) == CMD_START_PAIRING)
-                        goto do_pair;
-                }
+                if (wait_for_start_pairing(0)) goto do_pair;
 
                 bool ok = false;
 
@@ -412,9 +407,7 @@ top:
                 if (ok) goto connected;
 
                 // Wait reconnect_ms, polling command queue every 100 ms
-                int param = 0;
-                kbd_cmd_type_t cmd = wait_with_cmd_poll(reconnect_ms, &param);
-                if (cmd == CMD_START_PAIRING) goto do_pair;
+                if (wait_for_start_pairing(reconnect_ms)) goto do_pair;
 
                 ESP_LOGW(TAG, "Reconnect failed, retrying...");
             }
@@ -439,7 +432,7 @@ do_pair:
 restart_scan: {
         struct ble_gap_disc_params disc = {
             .passive           = 0,
-            .filter_duplicates = 1,
+            .filter_duplicates = 0,  // need repeats so collect_scan_cb can refresh RSSI
             .itvl              = 0x0050,
             .window            = 0x0030,
         };
@@ -486,7 +479,6 @@ restart_scan: {
                     memset(s_scan_devs, 0, sizeof(s_scan_devs));
                     xSemaphoreGive(s_scan_mutex);
                     ble_store_clear();
-                    scan_start = xTaskGetTickCount();
                     goto restart_scan;
                 }
                 if (cmd.type == CMD_SELECT_DEVICE) {
@@ -517,7 +509,6 @@ restart_scan: {
                 s_scan_dev_count = 0;
                 memset(s_scan_devs, 0, sizeof(s_scan_devs));
                 xSemaphoreGive(s_scan_mutex);
-                scan_start = xTaskGetTickCount();
                 goto restart_scan;
             }
         }
@@ -535,12 +526,21 @@ restart_scan: {
         xSemaphoreTake(s_open_done_sem, 0);
         esp_hidh_dev_open(sel.addr, ESP_HID_TRANSPORT_BLE, sel.addr_type);
 
-        // Wait up to 60 s (passkey flow can be slow)
+        // Wait up to 60 s (passkey flow can be slow), bailing on a queued
+        // re-pair so the user isn't stuck staring at a frozen "Connecting..."
         bool connected = false;
         TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(60000);
         while (xTaskGetTickCount() < deadline) {
             if (xSemaphoreTake(s_open_done_sem, pdMS_TO_TICKS(100)) == pdTRUE)
                 break;
+            kbd_cmd_t peek;
+            if (xQueuePeek(s_cmd_queue, &peek, 0) == pdTRUE &&
+                peek.type == CMD_START_PAIRING) {
+                xQueueReceive(s_cmd_queue, &peek, 0);  // we own the response
+                ble_gap_conn_cancel();
+                xSemaphoreTake(s_open_done_sem, pdMS_TO_TICKS(2000));
+                goto do_pair;
+            }
         }
         if (xSemaphoreTake(s_connected_sem, 0) == pdTRUE) {
             xSemaphoreGive(s_connected_sem);
@@ -567,8 +567,25 @@ connected:
     // Synthetic NUL wakeup — lets app unblock any queue waiting on a key
     emit_key('\0');
 
-    // Block until keyboard disconnects
-    xSemaphoreTake(s_disconnected_sem, portMAX_DELAY);
+    // Block until disconnect, but stay responsive to a re-pair request: the
+    // BOOT-hold affordance is the only escape from a flaky-but-still-paired
+    // keyboard, so we honour it immediately rather than waiting for a
+    // natural drop.
+    while (1) {
+        if (xSemaphoreTake(s_disconnected_sem, pdMS_TO_TICKS(100)) == pdTRUE)
+            break;
+        kbd_cmd_t peek;
+        if (xQueuePeek(s_cmd_queue, &peek, 0) == pdTRUE &&
+            peek.type == CMD_START_PAIRING) {
+            xQueueReceive(s_cmd_queue, &peek, 0);
+            ESP_LOGI(TAG, "re-pair requested while connected; closing link");
+            if (s_hidh_dev) {
+                esp_hidh_dev_close(s_hidh_dev);
+                xSemaphoreTake(s_disconnected_sem, pdMS_TO_TICKS(2000));
+            }
+            goto do_pair;
+        }
+    }
 
     set_state(BLE_KBD_STATE_RECONNECTING,
               "Keyboard disconnected", "Hold BOOT 2s to re-pair");
@@ -612,12 +629,21 @@ esp_err_t ble_kbd_host_init(const ble_kbd_host_config_t *cfg)
     ble_hs_cfg.store_status_cb   = ble_store_util_status_rr;
     ble_store_config_init();
 
-    esp_hid_gap_set_passkey_cb(show_passkey);
     esp_ble_hidh_set_passkey_cb(show_passkey);
 
     ESP_ERROR_CHECK(esp_nimble_enable(nimble_host_task));
 
-    vTaskDelay(pdMS_TO_TICKS(500));
+    // Wait for the host to sync. Native BT is typically tens of ms; over
+    // esp_hosted (ESP32-P4 talking to a co-processor) it can run longer, so
+    // poll instead of using a fixed sleep.
+    TickType_t sync_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(5000);
+    while (!ble_hs_synced()) {
+        if (xTaskGetTickCount() > sync_deadline) {
+            ESP_LOGE(TAG, "NimBLE host failed to sync within 5s");
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
 
     if (s_cfg.force_repair) {
         ESP_LOGW(TAG, "force_repair=true: clearing bonds before start");
